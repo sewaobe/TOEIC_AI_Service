@@ -1,0 +1,78 @@
+# ===============================
+#  PYTHON & FASTAPI PROJECT
+# ===============================
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+.venv.bak/
+
+# FastAPI / Uvicorn / logs
+*.log
+*.pid
+
+# Dataset / model cache
+data/
+*.sqlite3
+*.db
+*.csv
+*.tsv
+*.jsonl
+*.parquet
+
+# Hugging Face cache
+# (HuggingFace model downloads and sentence-transformers)
+cache/
+.huggingface/
+huggingface/
+hf_cache/
+~/.cache/huggingface/
+C:/Users/*/.cache/huggingface/
+
+# Pytest / coverage / build artifacts
+htmlcov/
+.tox/
+.nox/
+.coverage
+coverage.xml
+*.cover
+*.py,cover
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# IDE / Editor configs
+.vscode/
+.idea/
+*.code-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment & dotenv files
+.env
+.env.*
+*.bak
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Temporary or local files
+*.tmp
+*.swp
+*.bak
+*.old
+
+# ===============================
+# END
+# ===============================
