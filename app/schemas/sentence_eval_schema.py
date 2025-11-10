@@ -6,6 +6,12 @@ class SentenceEvalRequest(BaseModel):
     correct_def: str
 
 
+class SubScore(BaseModel):
+    definition_part: str
+    similarity: float
+
+
 class SentenceEvalResponse(BaseModel):
     similarity: float
     feedback: str
+    sub_scores: list[SubScore]
