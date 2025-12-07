@@ -2,6 +2,7 @@
 #  PYTHON & FASTAPI PROJECT
 # ===============================
 
+tmp_audio/*
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
@@ -12,6 +13,7 @@ __pycache__/
 venv/
 env/
 ENV/
+.env
 .venv.bak/
 
 # FastAPI / Uvicorn / logs
