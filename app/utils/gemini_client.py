@@ -103,6 +103,12 @@ def generate_gemini_response(
             lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
 
+    # Extract JSON object from response (handle cases where Gemini adds extra text)
+    json_start = cleaned.find("{")
+    json_end = cleaned.rfind("}")
+    if json_start != -1 and json_end != -1 and json_end > json_start:
+        cleaned = cleaned[json_start : json_end + 1]
+
     import json
 
     try:
@@ -198,6 +204,12 @@ def grammar_feedback_from_gemini(
             if lines and lines[-1].strip().startswith("```"):
                 lines = lines[:-1]
             cleaned = "\n".join(lines).strip()
+
+        # Extract JSON object from response (handle cases where Gemini adds extra text)
+        json_start = cleaned.find("{")
+        json_end = cleaned.rfind("}")
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            cleaned = cleaned[json_start : json_end + 1]
 
         import json
 
