@@ -36,6 +36,23 @@ class Mistake(BaseModel):
     explanation: str
 
 
+class VocabSuggestion(BaseModel):
+    """Vocabulary suggestion for words/phrases the user could diversify."""
+
+    word: str  # The word/phrase the user used
+    context: str  # Context of how user used it
+    alternatives: list[str]  # Synonyms or better alternatives
+
+
+class GrammarBreakdownItem(BaseModel):
+    """Grammar structure analysis from user's speech."""
+
+    structure: str  # e.g., "Present Perfect", "Conditional"
+    example: str  # User's example sentence
+    advice: str  # Improvement advice
+    status: Literal["Correct", "Needs Improvement"]
+
+
 class Feedback(BaseModel):
     pronunciation_score: float
     fluency_score: float
@@ -44,6 +61,9 @@ class Feedback(BaseModel):
     total_score: float
     improvement_tip: str
     mistakes: list[Mistake]
+    # New fields for vocabulary and grammar suggestions
+    vocab_suggestions: list[VocabSuggestion] = []
+    grammar_breakdown: list[GrammarBreakdownItem] = []
 
 
 class TurnResponse(BaseModel):

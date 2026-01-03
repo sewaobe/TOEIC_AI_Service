@@ -1,29 +1,17 @@
 from fastapi import APIRouter
 
-from app.schemas.chat_schema import (
-    ChatMessage,
-    ChatTurnRequest,
-    ChatTurnResponse,
-    Feedback,
-    Mistake,
-    TurnResponse,
-)
-from app.services import (
-    build_system_message_from_config,
-    calculate_transcript_similarity,
-    get_tts_parameters,
-)
-from app.utils.azure_speech import (
-    decode_base64_to_wav,
-    pronunciation_assessment_from_file,
-    stt_from_audio_file,
-    tts_to_wav_base64,
-)
-from app.utils.gemini_client import (
-    generate_gemini_response,
-    grammar_feedback_from_gemini,
-)
-from app.utils.intonation_utils import calculate_intonation_score, pitch_per_word
+from app.schemas.chat_schema import (ChatMessage, ChatTurnRequest,
+                                     ChatTurnResponse, Feedback, Mistake,
+                                     TurnResponse)
+from app.services import (build_system_message_from_config,
+                          calculate_transcript_similarity, get_tts_parameters)
+from app.utils.azure_speech import (decode_base64_to_wav,
+                                    pronunciation_assessment_from_file,
+                                    stt_from_audio_file, tts_to_wav_base64)
+from app.utils.gemini_client import (generate_gemini_response,
+                                     grammar_feedback_from_gemini)
+from app.utils.intonation_utils import (calculate_intonation_score,
+                                        pitch_per_word)
 
 router = APIRouter(prefix="/chat", tags=["Chat / Speaking Conversation"])
 
@@ -87,6 +75,8 @@ async def process_chat_turn(req: ChatTurnRequest) -> ChatTurnResponse:
         grammar_tip,
         mistakes,
         user_translation,
+        vocab_suggestions,
+        grammar_breakdown,
     ) = grammar_feedback_from_gemini(
         chosen_transcript,
         source_lang="en",
@@ -124,6 +114,8 @@ async def process_chat_turn(req: ChatTurnRequest) -> ChatTurnResponse:
         total_score=total_score,
         improvement_tip=grammar_tip or bot_text,
         mistakes=mistakes,
+        vocab_suggestions=vocab_suggestions,
+        grammar_breakdown=grammar_breakdown,
     )
 
     # 8. Generate Azure TTS audio for the bot's reply (WAV -> base64)

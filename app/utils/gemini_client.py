@@ -4,7 +4,12 @@ from typing import List, Tuple
 import google.generativeai as genai
 
 from app.core.config import settings
-from app.schemas.chat_schema import ChatMessage, Mistake
+from app.schemas.chat_schema import (
+    ChatMessage,
+    GrammarBreakdownItem,
+    Mistake,
+    VocabSuggestion,
+)
 
 if settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -133,15 +138,19 @@ def grammar_feedback_from_gemini(
     transcript: str,
     source_lang: str = "en",
     target_lang: str = "vi",
-) -> Tuple[float, str, List[Mistake], str]:
-    """Ask Gemini to grade grammar, list mistakes, and provide a user-side translation.
+) -> Tuple[
+    float, str, List[Mistake], str, List[VocabSuggestion], List[GrammarBreakdownItem]
+]:
+    """Ask Gemini to grade grammar, list mistakes, provide vocabulary suggestions,
+    grammar breakdown, and a user-side translation.
 
-    Returns (grammar_score_0_100, improvement_tip, mistakes_list, user_translation).
+    Returns (grammar_score_0_100, improvement_tip, mistakes_list, user_translation,
+             vocab_suggestions, grammar_breakdown).
     If parsing fails, falls back to neutral values.
     """
 
     if not transcript.strip():
-        return 0.0, "No transcript provided for grammar evaluation.", [], ""
+        return 0.0, "No transcript provided for grammar evaluation.", [], "", [], []
 
     system_instruction = (
         "You are an English speaking and grammar coach. "
@@ -151,14 +160,24 @@ def grammar_feedback_from_gemini(
         "Do NOT penalize or mention purely written punctuation issues such as commas, question marks, or capitalization "
         "if the sentence is otherwise clear and natural when spoken. "
         "Also translate the student's sentence into the target language. "
+        "Additionally, provide vocabulary suggestions to help the student diversify their word choices, "
+        "and analyze any grammar structures they used (correctly or incorrectly). "
         "Return a strict JSON object only, no extra text, in this exact format: "
         '{"grammar_score": number (0-100), '
         '"overall_feedback": string, '
         '"mistakes": ['
         '{"original": string, "correction": string, "type": "grammar"|"vocabulary"|"pronunciation", "explanation": string}'
         "], "
-        '"user_translation": string'
+        '"user_translation": string, '
+        '"vocab_suggestions": ['
+        '{"word": string (the word/phrase student used), "context": string (how they used it), "alternatives": [string] (better/diverse alternatives)}'
+        "], "
+        '"grammar_breakdown": ['
+        '{"structure": string (grammar structure name like "Present Perfect", "Conditional"), "example": string (student\'s sentence using this structure), "advice": string (improvement advice), "status": "Correct"|"Needs Improvement"}'
+        "]"
         "}. "
+        "For vocab_suggestions: identify common or repetitive words the student used and suggest better alternatives. "
+        "For grammar_breakdown: identify 1-3 main grammar structures the student attempted and evaluate them. "
         "Do NOT use markdown or code fences. Respond with a plain JSON object only."
     )
 
@@ -192,7 +211,7 @@ def grammar_feedback_from_gemini(
             print(
                 "[grammar_feedback_from_gemini] All Gemini models failed.", last_error
             )
-            return 0.0, "No grammar feedback due to a model error.", [], ""
+            return 0.0, "No grammar feedback due to a model error.", [], "", [], []
 
         # Handle Gemini sometimes wrapping JSON in markdown code fences ```json ... ```
         cleaned = raw_text.strip()
@@ -220,7 +239,14 @@ def grammar_feedback_from_gemini(
             print("[grammar_feedback_from_gemini] JSON parse error:", parse_error)
             print("[grammar_feedback_from_gemini] raw response:", raw_text)
             # Fallback: neutral score with textual feedback
-            return 50.0, "I could not reliably parse the grammar feedback.", [], ""
+            return (
+                50.0,
+                "I could not reliably parse the grammar feedback.",
+                [],
+                "",
+                [],
+                [],
+            )
 
         grammar_score = float(data.get("grammar_score", 0.0))
         overall_feedback = str(data.get("overall_feedback", ""))
@@ -242,6 +268,40 @@ def grammar_feedback_from_gemini(
                 # Skip malformed entries
                 continue
 
+        # Parse vocab_suggestions
+        vocab_raw = data.get("vocab_suggestions", []) or []
+        vocab_suggestions: List[VocabSuggestion] = []
+        for v in vocab_raw:
+            try:
+                vocab_suggestions.append(
+                    VocabSuggestion(
+                        word=str(v.get("word", "")),
+                        context=str(v.get("context", "")),
+                        alternatives=list(v.get("alternatives", [])),
+                    )
+                )
+            except Exception:
+                continue
+
+        # Parse grammar_breakdown
+        grammar_breakdown_raw = data.get("grammar_breakdown", []) or []
+        grammar_breakdown: List[GrammarBreakdownItem] = []
+        for g in grammar_breakdown_raw:
+            try:
+                status = str(g.get("status", "Needs Improvement"))
+                if status not in ["Correct", "Needs Improvement"]:
+                    status = "Needs Improvement"
+                grammar_breakdown.append(
+                    GrammarBreakdownItem(
+                        structure=str(g.get("structure", "")),
+                        example=str(g.get("example", "")),
+                        advice=str(g.get("advice", "")),
+                        status=status,
+                    )
+                )
+            except Exception:
+                continue
+
         # Clamp grammar_score to 0-100
         grammar_score = max(0.0, min(100.0, grammar_score))
 
@@ -250,8 +310,10 @@ def grammar_feedback_from_gemini(
             overall_feedback,
             mistakes,
             user_translation,
+            vocab_suggestions,
+            grammar_breakdown,
         )
     except Exception as e:
         # Fallback if LLM call fails completely (network, auth, etc.)
         print("[grammar_feedback_from_gemini] LLM call error:", e)
-        return 0.0, "No grammar feedback due to a model error.", [], ""
+        return 0.0, "No grammar feedback due to a model error.", [], "", [], []
