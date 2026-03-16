@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Gemini
     GEMINI_API_KEY: str = ""
 
+    # Sentry DSN
+    SENTRY_DSN: str = ""
+
     class Config:
         env_file = ".env"
 
