@@ -47,6 +47,15 @@ jobs:
           token: ${{ secrets.MY_GITHUB_TOKEN }}
           path: ansible-code
 
+      - name: Debug - List all files
+        run: |
+          echo "Vị trí thư mục hiện tại:"
+          pwd
+          echo "Danh sách các thư mục cấp 1:"
+          ls -F
+          echo "Soi sâu vào trong ansible-code (Recursive):"
+          ls -R ansible-code
+
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -56,9 +65,9 @@ jobs:
 
       - name: Create inventory file
         run: |
-          mkdir -p ansible-code/ansible/inventories/production
-          echo "[webservers]" > ansible-code/ansible/inventories/production/hosts.ini
-          echo "toeic-vps ansible_host=${{ secrets.VPS_HOST }} ansible_user=${{ secrets.VPS_USER }} ansible_ssh_private_key_file=~/.ssh/id_ed25519" >> ansible-code/ansible/inventories/production/hosts.ini
+          mkdir -p ansible-code/inventories/production
+          echo "[webservers]" > ansible-code/inventories/production/hosts.ini
+          echo "toeic-vps ansible_host=${{ secrets.VPS_HOST }} ansible_user=${{ secrets.VPS_USER }} ansible_ssh_private_key_file=~/.ssh/id_ed25519" >> ansible-code/inventories/production/hosts.ini
 
       - name: Install Ansible
         run: |
@@ -66,6 +75,6 @@ jobs:
 
       - name: Run Ansible Playbook
         run: |
-          ansible-playbook -i ansible-code/ansible/inventories/production/hosts.ini \
-            ansible-code/ansible/playbooks/deploy_fastapi.yml \
+          ansible-playbook -i ansible-code/inventories/production/hosts.ini \
+            ansible-code/playbooks/deploy_fastapi.yml \
             -e "image_name=${{ secrets.DOCKERHUB_USERNAME }}/toeic-fast-api:${{ github.sha }}"
