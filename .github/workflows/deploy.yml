@@ -77,4 +77,8 @@ jobs:
         run: |
           ansible-playbook -i ansible-code/inventories/production/hosts.ini \
             ansible-code/playbooks/deploy_fastapi.yml \
-            -e "image_name=${{ secrets.DOCKERHUB_USERNAME }}/toeic-fast-api:${{ github.sha }}"
+            -e "image_name=${{ secrets.DOCKERHUB_USERNAME }}/toeic-fast-api:${{ github.sha }}" \
+            -e "azure_speech_key=${{ secrets.AZURE_SPEECH_KEY }}" \
+            -e "azure_speech_region=${{ secrets.AZURE_SPEECH_REGION }}" \
+            -e "gemini_api_key=${{ secrets.GEMINI_API_KEY }}" \
+            -e "fastapi_sentry_dsn=${{ secrets.SENTRY_DSN }}"
