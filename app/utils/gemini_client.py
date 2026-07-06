@@ -1,5 +1,5 @@
-import os
-from typing import List, Tuple
+import json
+from typing import Any, List, Tuple
 
 import google.generativeai as genai
 
@@ -24,6 +24,148 @@ GEMINI_MODELS = [
     "gemini-flash-latest",
 ]
 
+DEFAULT_BOT_TEXT = "I'm having trouble responding right now. Please try again."
+DEFAULT_BOT_TRANSLATION = "Tôi đang gặp sự cố khi trả lời. Vui lòng thử lại sau."
+DEFAULT_GRAMMAR_ERROR = "No grammar feedback due to a model error."
+
+
+def _clean_json_text(raw_text: str) -> str:
+    cleaned = (raw_text or "{}").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    json_start = cleaned.find("{")
+    json_end = cleaned.rfind("}")
+    if json_start != -1 and json_end != -1 and json_end > json_start:
+        cleaned = cleaned[json_start : json_end + 1]
+
+    return cleaned
+
+
+def _parse_json_object(raw_text: str) -> dict[str, Any]:
+    data = json.loads(_clean_json_text(raw_text))
+    if not isinstance(data, dict):
+        raise ValueError("LLM response must be a JSON object.")
+    return data
+
+
+def _generate_deepseek_json(prompt: str, caller: str, max_tokens: int) -> dict[str, Any]:
+    if not settings.DEEPSEEK_API_KEY:
+        raise RuntimeError("Missing DEEPSEEK_API_KEY.")
+
+    try:
+        from openai import OpenAI
+    except Exception as import_error:
+        raise RuntimeError("Python package 'openai' is not installed.") from import_error
+
+    client = OpenAI(
+        api_key=settings.DEEPSEEK_API_KEY,
+        base_url=settings.DEEPSEEK_BASE_URL or "https://api.deepseek.com",
+    )
+    response = client.chat.completions.create(
+        model=settings.DEEPSEEK_MODEL or "deepseek-v4-flash",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return one valid JSON object only. Do not use markdown, "
+                    "code fences, comments, or explanatory text."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=max_tokens,
+    )
+    raw_text = response.choices[0].message.content or "{}"
+    print(f"[{caller}] DeepSeek succeeded with model {settings.DEEPSEEK_MODEL}.")
+    return _parse_json_object(raw_text)
+
+
+def _conversation_reply_from_data(data: dict[str, Any]) -> Tuple[str, str]:
+    bot_text = str(data.get("bot_text", "")).strip()
+    bot_translation = str(data.get("bot_translation", "")).strip()
+    if not bot_text:
+        bot_text = DEFAULT_BOT_TEXT
+    if not bot_translation:
+        bot_translation = DEFAULT_BOT_TRANSLATION
+    return bot_text, bot_translation
+
+
+def _grammar_feedback_from_data(
+    data: dict[str, Any],
+) -> Tuple[
+    float, str, List[Mistake], str, List[VocabSuggestion], List[GrammarBreakdownItem]
+]:
+    grammar_score = float(data.get("grammar_score", 0.0))
+    overall_feedback = str(data.get("overall_feedback", ""))
+    user_translation = str(data.get("user_translation", ""))
+
+    mistakes_raw = data.get("mistakes", []) or []
+    mistakes: List[Mistake] = []
+    for m in mistakes_raw:
+        try:
+            mistakes.append(
+                Mistake(
+                    original=str(m.get("original", "")),
+                    correction=str(m.get("correction", "")),
+                    type=str(m.get("type", "grammar")),
+                    explanation=str(m.get("explanation", "")),
+                )
+            )
+        except Exception:
+            continue
+
+    vocab_raw = data.get("vocab_suggestions", []) or []
+    vocab_suggestions: List[VocabSuggestion] = []
+    for v in vocab_raw:
+        try:
+            alternatives = v.get("alternatives", [])
+            if not isinstance(alternatives, list):
+                alternatives = [str(alternatives)]
+            vocab_suggestions.append(
+                VocabSuggestion(
+                    word=str(v.get("word", "")),
+                    context=str(v.get("context", "")),
+                    alternatives=[str(item) for item in alternatives],
+                )
+            )
+        except Exception:
+            continue
+
+    grammar_breakdown_raw = data.get("grammar_breakdown", []) or []
+    grammar_breakdown: List[GrammarBreakdownItem] = []
+    for g in grammar_breakdown_raw:
+        try:
+            status = str(g.get("status", "Needs Improvement"))
+            if status not in ["Correct", "Needs Improvement"]:
+                status = "Needs Improvement"
+            grammar_breakdown.append(
+                GrammarBreakdownItem(
+                    structure=str(g.get("structure", "")),
+                    example=str(g.get("example", "")),
+                    advice=str(g.get("advice", "")),
+                    status=status,
+                )
+            )
+        except Exception:
+            continue
+
+    grammar_score = max(0.0, min(100.0, grammar_score))
+    return (
+        grammar_score,
+        overall_feedback,
+        mistakes,
+        user_translation,
+        vocab_suggestions,
+        grammar_breakdown,
+    )
+
 
 def build_prompt_from_messages(messages: List[ChatMessage]) -> str:
     lines: list[str] = []
@@ -46,7 +188,6 @@ def generate_gemini_response(
     Returns (bot_text_en, bot_translation_target_lang).
     """
 
-    # Extract system message if present (from chat_router.py)
     system_context = ""
     conversation_messages = messages
     if messages and messages[0].role == "system":
@@ -55,7 +196,6 @@ def generate_gemini_response(
 
     conversation_prompt = build_prompt_from_messages(conversation_messages)
 
-    # Build a strong system instruction that enforces the scenario
     system_instruction = (
         "You are a friendly English conversation partner for language learners. "
     )
@@ -89,50 +229,38 @@ def generate_gemini_response(
             raw_text = response.text or "{}"
             break
         except Exception as e:
-            # Log and try next model
             print(f"[generate_gemini_response] Error with model {model_name}:", e)
             last_error = e
 
     if last_error and raw_text == "{}":
         print("[generate_gemini_response] All Gemini models failed.", last_error)
-        return (
-            "I'm having trouble responding right now. Please try again.",
-            "Tôi đang gặp sự cố khi trả lời. Vui lòng thử lại sau.",
-        )
-
-    cleaned = raw_text.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
-
-    # Extract JSON object from response (handle cases where Gemini adds extra text)
-    json_start = cleaned.find("{")
-    json_end = cleaned.rfind("}")
-    if json_start != -1 and json_end != -1 and json_end > json_start:
-        cleaned = cleaned[json_start : json_end + 1]
-
-    import json
+        try:
+            data = _generate_deepseek_json(
+                prompt,
+                caller="generate_gemini_response",
+                max_tokens=1200,
+            )
+            return _conversation_reply_from_data(data)
+        except Exception as deepseek_error:
+            print("[generate_gemini_response] DeepSeek fallback failed.", deepseek_error)
+            return DEFAULT_BOT_TEXT, DEFAULT_BOT_TRANSLATION
 
     try:
-        data = json.loads(cleaned)
-        bot_text = str(data.get("bot_text", "")).strip()
-        bot_translation = str(data.get("bot_translation", "")).strip()
-        if not bot_text:
-            bot_text = "I'm having trouble responding right now. Please try again."
-        if not bot_translation:
-            bot_translation = "Tôi đang gặp sự cố khi trả lời. Vui lòng thử lại sau."
-        return bot_text, bot_translation
+        data = _parse_json_object(raw_text)
+        return _conversation_reply_from_data(data)
     except Exception as parse_error:
         print("[generate_gemini_response] JSON parse error:", parse_error)
         print("[generate_gemini_response] raw response:", raw_text)
-        return (
-            "I'm having trouble responding right now. Please try again.",
-            "Tôi đang gặp sự cố khi trả lời. Vui lòng thử lại sau.",
-        )
-
+        try:
+            data = _generate_deepseek_json(
+                prompt,
+                caller="generate_gemini_response",
+                max_tokens=1200,
+            )
+            return _conversation_reply_from_data(data)
+        except Exception as deepseek_error:
+            print("[generate_gemini_response] DeepSeek fallback failed.", deepseek_error)
+            return DEFAULT_BOT_TEXT, DEFAULT_BOT_TRANSLATION
 
 def grammar_feedback_from_gemini(
     transcript: str,
@@ -173,7 +301,7 @@ def grammar_feedback_from_gemini(
         '{"word": string (the word/phrase student used), "context": string (how they used it), "alternatives": [string] (better/diverse alternatives)}'
         "], "
         '"grammar_breakdown": ['
-        '{"structure": string (grammar structure name like "Present Perfect", "Conditional"), "example": string (student\'s sentence using this structure), "advice": string (improvement advice), "status": "Correct"|"Needs Improvement"}'
+        '{"structure": string (grammar structure name like "Present Perfect", "Conditional"), "example": string (student sentence using this structure), "advice": string (improvement advice), "status": "Correct"|"Needs Improvement"}'
         "]"
         "}. "
         "For vocab_suggestions: identify common or repetitive words the student used and suggest better alternatives. "
@@ -192,7 +320,6 @@ def grammar_feedback_from_gemini(
 
     try:
         raw_text = "{}"
-
         last_error: Exception | None = None
         for model_name in GEMINI_MODELS:
             try:
@@ -202,118 +329,54 @@ def grammar_feedback_from_gemini(
                 break
             except Exception as e:
                 print(
-                    f"[grammar_feedback_from_gemini] Error with model {model_name}:", e
+                    f"[grammar_feedback_from_gemini] Error with model {model_name}:",
+                    e,
                 )
                 last_error = e
 
-        if last_error and (raw_text == "{}"):
-            # All models failed completely
-            print(
-                "[grammar_feedback_from_gemini] All Gemini models failed.", last_error
-            )
-            return 0.0, "No grammar feedback due to a model error.", [], "", [], []
-
-        # Handle Gemini sometimes wrapping JSON in markdown code fences ```json ... ```
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.splitlines()
-            # drop first line (``` or ```json)
-            lines = lines[1:]
-            # drop last line if it's a closing ```
-            if lines and lines[-1].strip().startswith("```"):
-                lines = lines[:-1]
-            cleaned = "\n".join(lines).strip()
-
-        # Extract JSON object from response (handle cases where Gemini adds extra text)
-        json_start = cleaned.find("{")
-        json_end = cleaned.rfind("}")
-        if json_start != -1 and json_end != -1 and json_end > json_start:
-            cleaned = cleaned[json_start : json_end + 1]
-
-        import json
+        if last_error and raw_text == "{}":
+            print("[grammar_feedback_from_gemini] All Gemini models failed.", last_error)
+            try:
+                data = _generate_deepseek_json(
+                    prompt,
+                    caller="grammar_feedback_from_gemini",
+                    max_tokens=2400,
+                )
+                return _grammar_feedback_from_data(data)
+            except Exception as deepseek_error:
+                print(
+                    "[grammar_feedback_from_gemini] DeepSeek fallback failed.",
+                    deepseek_error,
+                )
+                return 0.0, DEFAULT_GRAMMAR_ERROR, [], "", [], []
 
         try:
-            data = json.loads(cleaned)
+            data = _parse_json_object(raw_text)
         except Exception as parse_error:
-            # Log raw response for debugging when JSON is invalid
             print("[grammar_feedback_from_gemini] JSON parse error:", parse_error)
             print("[grammar_feedback_from_gemini] raw response:", raw_text)
-            # Fallback: neutral score with textual feedback
-            return (
-                50.0,
-                "I could not reliably parse the grammar feedback.",
-                [],
-                "",
-                [],
-                [],
-            )
-
-        grammar_score = float(data.get("grammar_score", 0.0))
-        overall_feedback = str(data.get("overall_feedback", ""))
-        user_translation = str(data.get("user_translation", ""))
-
-        mistakes_raw = data.get("mistakes", []) or []
-        mistakes: List[Mistake] = []
-        for m in mistakes_raw:
             try:
-                mistakes.append(
-                    Mistake(
-                        original=str(m.get("original", "")),
-                        correction=str(m.get("correction", "")),
-                        type=str(m.get("type", "grammar")),
-                        explanation=str(m.get("explanation", "")),
-                    )
+                data = _generate_deepseek_json(
+                    prompt,
+                    caller="grammar_feedback_from_gemini",
+                    max_tokens=2400,
                 )
-            except Exception:
-                # Skip malformed entries
-                continue
-
-        # Parse vocab_suggestions
-        vocab_raw = data.get("vocab_suggestions", []) or []
-        vocab_suggestions: List[VocabSuggestion] = []
-        for v in vocab_raw:
-            try:
-                vocab_suggestions.append(
-                    VocabSuggestion(
-                        word=str(v.get("word", "")),
-                        context=str(v.get("context", "")),
-                        alternatives=list(v.get("alternatives", [])),
-                    )
+                return _grammar_feedback_from_data(data)
+            except Exception as deepseek_error:
+                print(
+                    "[grammar_feedback_from_gemini] DeepSeek fallback failed.",
+                    deepseek_error,
                 )
-            except Exception:
-                continue
-
-        # Parse grammar_breakdown
-        grammar_breakdown_raw = data.get("grammar_breakdown", []) or []
-        grammar_breakdown: List[GrammarBreakdownItem] = []
-        for g in grammar_breakdown_raw:
-            try:
-                status = str(g.get("status", "Needs Improvement"))
-                if status not in ["Correct", "Needs Improvement"]:
-                    status = "Needs Improvement"
-                grammar_breakdown.append(
-                    GrammarBreakdownItem(
-                        structure=str(g.get("structure", "")),
-                        example=str(g.get("example", "")),
-                        advice=str(g.get("advice", "")),
-                        status=status,
-                    )
+                return (
+                    50.0,
+                    "I could not reliably parse the grammar feedback.",
+                    [],
+                    "",
+                    [],
+                    [],
                 )
-            except Exception:
-                continue
 
-        # Clamp grammar_score to 0-100
-        grammar_score = max(0.0, min(100.0, grammar_score))
-
-        return (
-            grammar_score,
-            overall_feedback,
-            mistakes,
-            user_translation,
-            vocab_suggestions,
-            grammar_breakdown,
-        )
+        return _grammar_feedback_from_data(data)
     except Exception as e:
-        # Fallback if LLM call fails completely (network, auth, etc.)
         print("[grammar_feedback_from_gemini] LLM call error:", e)
-        return 0.0, "No grammar feedback due to a model error.", [], "", [], []
+        return 0.0, DEFAULT_GRAMMAR_ERROR, [], "", [], []
